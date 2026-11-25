@@ -1,0 +1,184 @@
+version: '3.8'
+
+# CI-ready Docker Compose for LLM Red-Teaming test execution
+# Usage: docker compose -f docker-compose.test.yml up --build --abort-on-container-exit
+
+services:
+  # PostgreSQL with pgvector for vector storage
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: rag-test-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ragdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_test_data:/var/lib/postgresql/data
+      - ./init-pgvector.sql:/docker-entrypoint-initdb.d/init-pgvector.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - rag-test-network
+
+  # Ollama for local LLM inference
+  ollama:
+    image: ollama/ollama:latest
+    container_name: rag-test-ollama
+    environment:
+      OLLAMA_HOST: 0.0.0.0
+      OLLAMA_ORIGINS: "*"
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_test_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    networks:
+      - rag-test-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # Reference RAG application (hardened)
+  reference-rag:
+    build:
+      context: ../apps/reference-rag
+      dockerfile: ../../docker/Dockerfile
+    container_name: rag-test-reference-rag
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/ragdb
+      - LLM_PROVIDER=ollama
+      - LLM_MODEL=llama3.1:8b
+      - LLM_BASE_URL=http://ollama:11434
+      - LLM_TEMPERATURE=0.0
+      - LLM_MAX_TOKENS=2000
+      - EMBEDDING_PROVIDER=ollama
+      - EMBEDDING_MODEL=nomic-embed-text
+      - EMBEDDING_BASE_URL=http://ollama:11434
+      - AUTH_ENABLED=false
+      - LOG_LEVEL=INFO
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - rag-test-network
+
+  # Mock existing RAG for testing
+  existing-rag-mock:
+    build:
+      context: ../apps/existing-rag-adapter
+      dockerfile: ../../docker/Dockerfile.mock
+    container_name: rag-test-existing-rag-mock
+    environment:
+      - PORT=8001
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - rag-test-network
+
+  # Test Runner - executes red-teaming tests
+  test-runner:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.test-runner
+    container_name: rag-test-runner
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/ragdb
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - INIT_DB=true
+      # API Keys (set via secrets in CI)
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ./results:/app/results
+      - ./config:/app/config:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+      reference-rag:
+        condition: service_healthy
+      existing-rag-mock:
+        condition: service_healthy
+    networks:
+      - rag-test-network
+    # Default command runs baseline assessment
+    command: ["baseline", "--target", "reference-rag", "--target", "existing-rag", "--output", "results/baseline", "--concurrent", "3"]
+
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:v2.50.0
+    container_name: rag-test-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.test.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_test_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - rag-test-network
+
+  # Grafana for visualization
+  grafana:
+    image: grafana/grafana:10.3.0
+    container_name: rag-test-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    volumes:
+      - grafana_test_data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    depends_on:
+      - prometheus
+    networks:
+      - rag-test-network
+
+volumes:
+  postgres_test_data:
+  ollama_test_data:
+  prometheus_test_data:
+  grafana_test_data:
+
+networks:
+  rag-test-network:
+    driver: bridge

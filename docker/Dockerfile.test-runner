@@ -1,0 +1,91 @@
+# Test Runner - Multi-stage build for LLM Red-Teaming
+# Optimized for CI/CD with minimal attack surface
+
+# =============================================================================
+# Stage 1: Builder - Install dependencies and compile wheels
+# =============================================================================
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+
+# Install system dependencies for building
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install UV for fast dependency resolution
+RUN pip install --no-cache-dir uv
+
+# Copy workspace configuration
+COPY pyproject.toml uv.lock* ./
+
+# Copy all package pyproject.toml files
+COPY libs/rag-target/pyproject.toml libs/rag-target/
+COPY libs/llm-provider/pyproject.toml libs/llm-provider/
+COPY libs/guards/pyproject.toml libs/guards/
+COPY libs/test-harness/pyproject.toml libs/test-harness/
+COPY apps/reference-rag/pyproject.toml apps/reference-rag/
+COPY apps/existing-rag-adapter/pyproject.toml apps/existing-rag-adapter/
+COPY src/llm_redteam_cli/pyproject.toml src/llm_redteam_cli/
+
+# Create virtual environment and install all packages in editable mode
+RUN uv venv /opt/venv && \
+    /opt/venv/bin/uv pip install -e libs/rag-target -e libs/llm-provider -e libs/guards -e libs/test-harness -e apps/reference-rag -e apps/existing-rag-adapter -e src/llm_redteam_cli
+
+# =============================================================================
+# Stage 2: Runtime - Minimal image with only runtime dependencies
+# =============================================================================
+FROM python:3.11-slim AS runtime
+
+WORKDIR /app
+
+# Install only runtime system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Copy virtual environment from builder
+COPY --from=builder /opt/venv /opt/venv
+
+# Ensure venv is in PATH
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Copy application code
+COPY libs/rag-target/src/rag_target /app/libs/rag_target
+COPY libs/llm-provider/src/llm_provider /app/libs/llm_provider
+COPY libs/guards/src/guards /app/libs/guards
+COPY libs/test-harness/src/test_harness /app/libs/test_harness
+COPY apps/reference-rag/src/reference_rag /app/apps/reference_rag
+COPY apps/existing-rag-adapter/src/existing_rag_adapter /app/apps/existing_rag_adapter
+COPY src/llm_redteam_cli /app/src/llm_redteam_cli
+
+# Copy scripts and config
+COPY scripts /app/scripts
+COPY config /app/config
+COPY dashboard /app/dashboard
+
+# Copy entrypoint script
+COPY docker/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+# Create non-root user for security
+RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser && \
+    chown -R appuser:appuser /app
+
+USER appuser
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import sys; sys.path.insert(0, '/app/src'); from llm_redteam_cli import app; print('OK')" || exit 1
+
+# Default entrypoint
+ENTRYPOINT ["/app/entrypoint.sh"]
+
+# Default command shows help
+CMD ["--help"]

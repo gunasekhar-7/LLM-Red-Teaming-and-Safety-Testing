@@ -1,0 +1,339 @@
+name: LLM Red-Teaming CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ['v*']
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    # Run weekly on Mondays at 2 AM UTC
+    - cron: '0 2 * * 1'
+  workflow_dispatch:
+    inputs:
+      test_mode:
+        description: 'Test mode'
+        required: true
+        default: 'baseline'
+        type: choice
+        options:
+          - baseline
+          - comparative
+          - full
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/test-runner
+
+jobs:
+  # =============================================================================
+  # Code Quality & Security
+  # =============================================================================
+  lint-and-typecheck:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install uv
+          uv sync --all-extras
+
+      - name: Run Ruff (linting)
+        run: uv run ruff check .
+
+      - name: Run Ruff (format check)
+        run: uv run ruff format --check .
+
+      - name: Run MyPy (type checking)
+        run: uv run mypy .
+
+      - name: Check for secrets
+        run: |
+          pip install detect-secrets
+          detect-secrets scan --baseline .secrets.baseline || true
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install uv
+          uv sync --all-extras
+
+      - name: Run unit tests
+        run: uv run pytest -m unit -v --tb=short --cov=src --cov-report=xml
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          flags: unittests
+
+  # =============================================================================
+  # Integration Tests (requires Docker)
+  # =============================================================================
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: [lint-and-typecheck, unit-tests]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Start test infrastructure
+        run: |
+          cd infra/docker
+          docker compose -f docker-compose.test.yml up -d postgres ollama reference-rag existing-rag-mock
+
+      - name: Wait for services
+        run: |
+          for i in {1..30}; do
+            if curl -sf http://localhost:8000/health && curl -sf http://localhost:8001/health; then
+              echo "Services ready"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Services failed to start"
+          exit 1
+
+      - name: Run baseline assessment
+        run: |
+          docker compose -f infra/docker/docker-compose.test.yml run --rm test-runner \
+            baseline --target reference-rag --target existing-rag --output results/baseline --concurrent 3
+
+      - name: Upload baseline results
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-results
+          path: results/baseline/
+          retention-days: 30
+
+      - name: Run comparative test (if baseline exists)
+        if: always()
+        run: |
+          BASELINE_FILE=$(find results/baseline -name "*.jsonl" | head -1)
+          if [ -n "$BASELINE_FILE" ]; then
+            docker compose -f infra/docker/docker-compose.test.yml run --rm test-runner \
+              compare "$BASELINE_FILE" --target reference-rag --target existing-rag --output results/mitigated
+          else
+            echo "No baseline found, skipping comparative test"
+          fi
+
+      - name: Upload comparative results
+        uses: actions/upload-artifact@v4
+        with:
+          name: comparative-results
+          path: results/mitigated/
+          retention-days: 30
+
+      - name: Generate audit report
+        if: always()
+        run: |
+          BASELINE_FILE=$(find results/baseline -name "*.jsonl" | head -1)
+          COMPARISON_FILE=$(find results/mitigated -name "comparison.json" | head -1)
+          if [ -n "$BASELINE_FILE" ] && [ -n "$COMPARISON_FILE" ]; then
+            docker compose -f infra/docker/docker-compose.test.yml run --rm test-runner \
+              report "$BASELINE_FILE" --comparison "$COMPARISON_FILE" --format html --output results/report.html
+            docker compose -f infra/docker/docker-compose.test.yml run --rm test-runner \
+              report "$BASELINE_FILE" --comparison "$COMPARISON_FILE" --format md --output results/report.md
+          fi
+
+      - name: Upload audit reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-reports
+          path: results/
+          retention-days: 90
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker compose -f infra/docker/docker-compose.test.yml down -v
+
+  # =============================================================================
+  # Build & Push Docker Image
+  # =============================================================================
+  build-image:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [lint-and-typecheck, unit-tests]
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push test-runner image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.test-runner
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # =============================================================================
+  # SBOM Generation
+  # =============================================================================
+  sbom:
+    name: Generate SBOM
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [build-image]
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Generate SBOM for test-runner
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          format: spdx-json
+          output-file: sbom-test-runner.spdx.json
+
+      - name: Generate SBOM for reference-rag
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.REGISTRY }}/${{ github.repository }}/reference-rag:latest
+          format: spdx-json
+          output-file: sbom-reference-rag.spdx.json
+
+      - name: Upload SBOMs
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom-*.spdx.json
+          retention-days: 90
+
+      - name: Attach SBOM to release
+        if: github.event_name == 'release'
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: sbom-test-runner.spdx.json
+          asset_name: sbom-test-runner.spdx.json
+          asset_content_type: application/json
+
+  # =============================================================================
+  # Release
+  # =============================================================================
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [integration-tests, build-image, sbom]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog
+        id: changelog
+        uses: requarks/changelog-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ github.ref_name }}
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          body: ${{ steps.changelog.outputs.changelog }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            sbom-*.spdx.json
+
+  # =============================================================================
+  # Security Scan
+  # =============================================================================
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [build-image]
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif

@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "test-harness"
+version = "0.1.0"
+description = "Test harness integrating Garak and PromptFoo"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+dependencies = [
+    "pydantic>=2.6.0",
+    "pydantic-settings>=2.2.0",
+    "garak>=0.10.0",
+    "promptfoo>=0.2.0",
+    "pandas>=2.2.0",
+    "aiohttp>=3.9.0",
+    "tqdm>=4.66.0",
+    "jinja2>=3.1.0",
+    "plotly>=5.19.0",
+    "weasyprint>=60.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-mock>=3.12.0",
+    "ruff>=0.3.0",
+    "mypy>=1.8.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/test_harness"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = ["E", "F", "I", "UP", "W", "C90", "ANN", "ARG", "PTH", "PT", "Q", "SIM", "T20", "TCH", "TRY"]
+src = ["src"]

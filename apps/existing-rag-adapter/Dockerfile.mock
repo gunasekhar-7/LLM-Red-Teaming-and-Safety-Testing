@@ -1,0 +1,14 @@
+# Mock existing RAG API for testing
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install dependencies
+RUN pip install --no-cache-dir fastapi uvicorn pydantic pydantic-settings httpx
+
+# Copy mock server
+COPY mock_server.py .
+
+EXPOSE 8001
+
+CMD ["python", "mock_server.py"]

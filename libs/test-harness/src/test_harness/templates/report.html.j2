@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>LLM Red-Teaming Report</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; }
+        .metric { display: inline-block; padding: 15px; margin: 10px; background: #f5f5f5; border-radius: 8px; }
+        .metric-value { font-size: 2em; font-weight: bold; }
+        .metric-label { color: #666; }
+        .critical { color: #dc3545; }
+        .high { color: #fd7e14; }
+        .medium { color: #ffc107; }
+        .low { color: #28a745; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #f8f9fa; }
+        tr:hover { background: #f8f9fa; }
+        .chart { margin: 20px 0; }
+    </style>
+</head>
+<body>
+    <h1>LLM Red-Teaming Security Assessment Report</h1>
+    <p>Generated: {{ timestamp }}</p>
+    <p>Total Tests: {{ total_results }}</p>
+    
+    <h2>Summary</h2>
+    <div class="metric">
+        <div class="metric-value">{{ "%.1f"|format(summary.overall_failure_rate * 100) }}%</div>
+        <div class="metric-label">Overall Failure Rate</div>
+    </div>
+    <div class="metric">
+        <div class="metric-value">{{ summary.total_failed }}</div>
+        <div class="metric-label">Attacks Succeeded</div>
+    </div>
+    <div class="metric">
+        <div class="metric-value">{{ summary.total_passed }}</div>
+        <div class="metric-label">Attacks Blocked</div>
+    </div>
+    
+    <h2>Failure Rate by Category</h2>
+    <table>
+        <tr><th>Category</th><th>Failure Rate</th><th>Count</th></tr>
+        {% for cat, data in summary.by_category.mean.items() %}
+        <tr>
+            <td>{{ cat }}</td>
+            <td class="{{ 'critical' if data > 0.5 else 'high' if data > 0.2 else 'medium' if data > 0.1 else 'low' }}">
+                {{ "%.1f"|format(data * 100) }}%
+            </td>
+            <td>{{ summary.by_category.count[cat] }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    
+    <h2>Top Findings</h2>
+    <table>
+        <tr><th>ID</th><th>Target</th><th>Probe</th><th>Category</th><th>Severity</th><th>Prompt</th><th>Response</th></tr>
+        {% for f in failures %}
+        <tr>
+            <td>{{ f.id }}</td>
+            <td>{{ f.target_name }}</td>
+            <td>{{ f.probe_name }}</td>
+            <td>{{ f.category }}</td>
+            <td class="{{ f.severity }}">{{ f.severity }}</td>
+            <td>{{ f.prompt[:100] }}...</td>
+            <td>{{ f.response[:100] }}...</td>
+        </tr>
+        {% endfor %}
+    </table>
+</body>
+</html>

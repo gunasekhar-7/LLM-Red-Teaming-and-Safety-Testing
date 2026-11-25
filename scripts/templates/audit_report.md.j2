@@ -1,0 +1,167 @@
+# {{ metadata.title }}
+
+**Version:** {{ metadata.version }} | **Date:** {{ metadata.date }} | **Classification:** {{ metadata.classification }}
+
+---
+
+## 1. Executive Summary
+
+{{ executive_summary }}
+
+| Metric | Value |
+|--------|-------|
+| Baseline Failure Rate | {{ "%.1f"|format(summary.overall_failure_rate * 100) }}% |
+| Post-Mitigation Failure Rate | {{ "%.1f"|format(validation.overall.mitigated_failure_rate * 100) if validation else 'N/A' }}% |
+| Risk Reduction | {{ "%.1f"|format((validation.overall.relative_risk_reduction * 100) if validation else 0) }}% |
+| Total Tests | {{ summary.total_attacks }} |
+
+---
+
+## 2. Scope & Methodology
+
+### 2.1 Scope
+
+{{ scope.description }}
+
+- **Targets:** {{ scope.targets | join(", ") }}
+- **Providers:** {{ scope.providers | join(", ") }}
+- **Attack Categories:** {{ scope.categories | join(", ") }}
+- **Test Duration:** {{ scope.duration }}
+
+### 2.2 Methodology
+
+{{ methodology }}
+
+---
+
+## 3. Target Architecture
+
+{{ architecture.description }}
+
+| Component | Technology | Version | Configuration |
+|-----------|------------|---------|---------------|
+{% for comp in architecture.components %}
+| {{ comp.name }} | {{ comp.tech }} | {{ comp.version }} | {{ comp.config }} |
+{% endfor %}
+
+---
+
+## 4. Baseline Findings
+
+### 4.1 Failure Rate by Category
+
+| Category | Tests | Failures | Failure Rate | Severity |
+|----------|-------|----------|--------------|----------|
+{% for cat, rate in summary.by_category.mean.items() %}
+| {{ cat.replace('_', ' ').title() }} | {{ summary.by_category.count[cat] }} | {{ (summary.by_category.count[cat] * rate) | int }} | {{ "%.1f"|format(rate * 100) }}% | {{ severity_for_category(cat) }} |
+{% endfor %}
+
+### 4.2 Top Critical Findings
+
+{% for finding in top_findings[:10] %}
+#### {{ finding.probe_name }} ({{ finding.severity }})
+
+- **Target:** {{ finding.target_name }}
+- **Category:** {{ finding.category }}
+- **Attack:** {{ finding.prompt[:200] }}{% if finding.prompt|length > 200 %}...{% endif %}
+- **Response:** `{{ finding.response[:200] }}{% if finding.response|length > 200 %}...{% endif %}`
+
+---
+{% endfor %}
+
+---
+
+## 5. Mitigations Implemented
+
+{{ mitigations.overview }}
+
+### 5.1 Defense Layers
+
+| Layer | Components | Coverage | Latency Overhead |
+|-------|------------|----------|------------------|
+{% for layer in mitigations.layers %}
+| {{ layer.name }} | {{ layer.components | join(", ") }} | {{ layer.coverage }} | {{ layer.latency }} |
+{% endfor %}
+
+### 5.2 Configuration
+
+```yaml
+{{ mitigations.config_yaml }}
+```
+
+---
+
+## 6. Validation Results
+
+{% if validation %}
+### 6.1 Overall Comparison
+
+| Metric | Baseline | Mitigated | Change |
+|--------|----------|-----------|--------|
+| Failure Rate | {{ "%.1f"|format(validation.overall.baseline_failure_rate * 100) }}% | {{ "%.1f"|format(validation.overall.mitigated_failure_rate * 100) }}% | {{ "%+.1f"|format(validation.overall.absolute_risk_reduction * 100) }}% |
+| Relative Reduction | - | - | {{ "%.1f"|format(validation.overall.relative_risk_reduction * 100) }}% |
+| P-value | - | - | {{ "%.6f"|format(validation.overall.p_value) }} {% if validation.overall.significant %}(Significant){% else %}(Not Significant){% endif %} |
+| Effect Size | - | - | {{ "%.3f"|format(validation.overall.effect_size) }} |
+
+### 6.2 Category-Level Results
+
+| Category | Baseline | Mitigated | Abs. Reduction | Rel. Reduction |
+|----------|----------|-----------|----------------|----------------|
+{% for cat, data in validation.by_category.items() %}
+| {{ cat.replace('_', ' ').title() }} | {{ "%.1f"|format(data.baseline_failure_rate * 100) }}% | {{ "%.1f"|format(data.mitigated_failure_rate * 100) }}% | {{ "%+.1f"|format(data.absolute_reduction * 100) }}% | {{ "%.1f"|format(data.relative_reduction * 100) }}% |
+{% endfor %}
+
+{% if validation.regressions %}
+### 6.3 Regressions Detected
+
+[WARNING] {{ validation.regressions | length }} regression(s) found.
+
+| Probe | Target | Category | Severity |
+|-------|--------|----------|----------|
+{% for reg in validation.regressions %}
+| {{ reg.probe }} | {{ reg.target }} | {{ reg.category }} | {{ reg.severity }} |
+{% endfor %}
+{% else %}
+### 6.3 Regressions
+
+[OK] No regressions detected.
+{% endif %}
+{% else %}
+Validation results not available.
+{% endif %}
+
+---
+
+## 7. Residual Risk Register
+
+| Risk ID | Category | Likelihood | Impact | Score | Status |
+|---------|----------|------------|--------|-------|--------|
+{% for risk in residual_risks %}
+| {{ risk.id }} | {{ risk.category }} | {{ risk.likelihood }} | {{ risk.impact }} | {{ risk.score }} | {{ risk.status }} |
+{% endfor %}
+
+---
+
+## 8. Recommendations
+
+{% for rec in recommendations %}
+{{ loop.index }}. **{{ rec.title }}**: {{ rec.description }}
+{% endfor %}
+
+---
+
+## 9. Appendices
+
+### 9.1 Probe Catalog
+
+| Probe | Category | Severity | Description |
+|-------|----------|----------|-------------|
+{% for probe in probe_catalog %}
+| {{ probe.name }} | {{ probe.category }} | {{ probe.severity }} | {{ probe.description }} |
+{% endfor %}
+
+### 9.2 Configuration
+
+```yaml
+{{ full_config }}
+```

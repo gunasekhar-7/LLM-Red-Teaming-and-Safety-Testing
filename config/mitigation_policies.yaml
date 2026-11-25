@@ -1,0 +1,117 @@
+# Mitigation Policies Configuration
+# Used by guards library for defense layer configuration
+
+# Input Guard - protects against malicious inputs
+input_guard:
+  # Injection classifier (DeBERTa-based)
+  injection_classifier_enabled: true
+  injection_classifier_model: "protectai/deberta-v3-base-prompt-injection"
+  injection_classifier_threshold: 0.85
+  
+  # Pattern-based blocking
+  pattern_blocking_enabled: true
+  blocked_patterns:
+    - "ignore previous instructions"
+    - "disregard the above"
+    - "system prompt"
+    - "### Instruction"
+    - "<\\|im_start\\|>"
+    - "<\\|im_end\\|>"
+    - "\\[/INST\\]"
+    - "\\[INST\\]"
+    - "you are now"
+    - "pretend to be"
+    - "roleplay as"
+    - "act as"
+    - "disregard"
+    - "override"
+    - "bypass"
+    - "jailbreak"
+  
+  # Encoding detection
+  encoding_detection_enabled: true
+  encoding_entropy_threshold: 4.5
+  encoding_min_length: 20
+  
+  # Length normalization
+  length_normalization_enabled: true
+  max_prompt_tokens: 4000
+  max_prompt_chars: 16000
+
+# Retrieval Guard - sanitizes retrieved context
+retrieval_guard:
+  # PII redaction (Microsoft Presidio)
+  pii_redaction_enabled: true
+  pii_threshold: 0.7
+  pii_entities:
+    - "PERSON"
+    - "EMAIL_ADDRESS"
+    - "PHONE_NUMBER"
+    - "CREDIT_CARD"
+    - "IBAN_CODE"
+    - "IP_ADDRESS"
+    - "API_KEY"
+    - "PASSWORD"
+    - "SECRET_KEY"
+    - "CRYPTO_WALLET"
+    - "MEDICAL_LICENSE"
+    - "US_SSN"
+    - "US_DRIVER_LICENSE"
+    - "US_PASSPORT"
+  
+  # Relevance filtering
+  relevance_filtering_enabled: true
+  min_relevance_score: 0.7
+  max_chunks: 5
+  max_context_tokens: 3000
+  
+  # Tenant isolation
+  tenant_isolation: strict  # strict, warn, none
+  tenant_id_header: "X-Tenant-ID"
+
+# Output Guard - sanitizes model responses
+output_guard:
+  # Citation verification
+  citation_verification_enabled: true
+  citation_pattern: "\\[(\\d+)\\]|\\((\\d+)\\)|Source (\\d+)"
+  
+  # PII redaction (same as retrieval)
+  pii_redaction_enabled: true
+  pii_threshold: 0.7
+  
+  # Refusal detection (positive signal)
+  refusal_detection_enabled: true
+  refusal_patterns:
+    - "i cannot"
+    - "i can't"
+    - "i'm unable"
+    - "i am unable"
+    - "i won't"
+    - "i will not"
+    - "as an ai"
+    - "as a language model"
+    - "against my guidelines"
+    - "violates policy"
+    - "not appropriate"
+    - "cannot provide"
+    - "unable to assist"
+    - "i'm not able"
+    - "i am not able"
+  
+  # Length enforcement
+  length_enforcement_enabled: true
+  max_response_tokens: 2000
+  truncate_suffix: " ... [truncated]"
+
+# Runtime monitoring
+runtime_monitoring:
+  enabled: true
+  log_all_requests: true
+  log_blocked_requests: true
+  alert_on_anomaly: true
+  anomaly_threshold: 0.8
+  metrics_port: 9090
+
+# Policy versioning
+policy_version: "1.0.0"
+policy_updated: "2026-11-03"
