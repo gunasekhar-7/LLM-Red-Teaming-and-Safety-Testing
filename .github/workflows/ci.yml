@@ -114,12 +114,14 @@ jobs:
 
       - name: Start test infrastructure
         run: |
+          mkdir -p results/baseline results/mitigated
+          chmod -R a+rwX results
           cd infra/docker
-          docker compose -f docker-compose.test.yml up -d postgres ollama reference-rag existing-rag-mock
+          docker compose -f docker-compose.test.yml up -d --build postgres ollama reference-rag existing-rag-mock
 
       - name: Wait for services
         run: |
-          for i in {1..30}; do
+          for i in {1..40}; do
             if curl -sf http://localhost:8000/api/v1/health && curl -sf http://localhost:8001/health; then
               echo "Services ready"
               exit 0
@@ -127,6 +129,8 @@ jobs:
             sleep 5
           done
           echo "Services failed to start"
+          docker compose -f infra/docker/docker-compose.test.yml ps
+          docker compose -f infra/docker/docker-compose.test.yml logs --tail=100
           exit 1
 
       - name: Run baseline assessment
@@ -272,10 +276,17 @@ jobs:
     if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     permissions:
       contents: read
-      packages: write
+      packages: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate SBOM for test-runner
         uses: anchore/sbom-action@v0
@@ -354,13 +365,24 @@ jobs:
     if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     permissions:
       contents: read
+      packages: read
       security-events: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         with:
           image-ref: ${{ env.REGISTRY }}/${{ needs.build-image.outputs.repo_lower }}/test-runner:latest
           format: sarif

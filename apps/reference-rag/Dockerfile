@@ -8,11 +8,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
+RUN pip install --no-cache-dir uv
+
 COPY libs/guards ./libs/guards
 COPY apps/reference-rag ./apps/reference-rag
 
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir ./libs/guards ./apps/reference-rag
+RUN uv pip install --system --no-cache \
+        --index-url https://download.pytorch.org/whl/cpu \
+        "torch>=2.2.0" && \
+    uv pip install --system --no-cache \
+        ./libs/guards \
+        ./apps/reference-rag
 
 FROM python:3.11-slim
 

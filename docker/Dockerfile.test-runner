@@ -22,15 +22,20 @@ COPY libs ./libs
 COPY apps ./apps
 COPY src ./src
 
+# Install CPU-only PyTorch first to avoid multi-GB CUDA wheels in CI,
+# then install all workspace packages non-editably into /opt/venv.
 RUN uv venv /opt/venv && \
-    /opt/venv/bin/uv pip install \
-        -e libs/rag-target \
-        -e libs/llm-provider \
-        -e libs/guards \
-        -e libs/test-harness \
-        -e apps/reference-rag \
-        -e apps/existing-rag-adapter \
-        -e .
+    uv pip install --python /opt/venv/bin/python --no-cache \
+        --index-url https://download.pytorch.org/whl/cpu \
+        "torch>=2.2.0" && \
+    uv pip install --python /opt/venv/bin/python --no-cache \
+        ./libs/rag-target \
+        ./libs/llm-provider \
+        ./libs/guards \
+        ./libs/test-harness \
+        ./apps/reference-rag \
+        ./apps/existing-rag-adapter \
+        .
 
 # =============================================================================
 # Stage 2: Runtime - Minimal image with only runtime dependencies
@@ -59,6 +64,7 @@ COPY docker/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser && \
+    mkdir -p /app/results && \
     chown -R appuser:appuser /app
 
 USER appuser
