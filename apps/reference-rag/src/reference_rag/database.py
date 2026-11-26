@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime
@@ -66,7 +68,7 @@ class DocumentChunk(Base):
         Index(
             "ix_chunks_embedding",
             "embedding",
-            postgresql_using="ivfflat",
+            postgresql_using="hnsw",
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
         Index("ix_chunks_document_index", "document_id", "chunk_index"),
@@ -98,11 +100,27 @@ async def get_session() -> AsyncIterator[AsyncSession]:
         yield session
 
 
-async def init_db() -> None:
-    """Initialize database tables."""
-    async with engine.begin() as conn:
-        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        await conn.run_sync(Base.metadata.create_all)
+logger = logging.getLogger(__name__)
+
+
+async def init_db(max_attempts: int = 15, retry_delay: float = 2.0) -> None:
+    """Initialize database tables with connection retry for container startup."""
+    last_error: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+                await conn.run_sync(Base.metadata.create_all)
+            return
+        except Exception as exc:
+            last_error = exc
+            if attempt == max_attempts:
+                break
+            logger.warning("Database not ready (attempt %d/%d): %s", attempt, max_attempts, exc)
+            await asyncio.sleep(retry_delay)
+
+    assert last_error is not None
+    raise last_error
 
 
 async def close_db() -> None:
