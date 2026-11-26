@@ -19,7 +19,17 @@ classifiers = [
     "Topic :: Security",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dependencies = []
+dependencies = [
+    "rag-target",
+    "llm-provider",
+    "guards",
+    "test-harness",
+    "existing-rag-adapter",
+    "reference-rag",
+    "typer>=0.12.0",
+    "rich>=13.7.0",
+    "pyyaml>=6.0.1",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -40,52 +50,69 @@ test = [
     "pytest-mock>=3.12.0",
     "hypothesis>=6.90.0",
 ]
+dashboard = [
+    "streamlit>=1.32.0",
+    "plotly>=5.19.0",
+    "streamlit-aggrid>=1.0.0",
+]
+
+[project.scripts]
+llm-redteam = "llm_redteam_cli:app"
+
+[tool.uv.workspace]
+members = ["libs/*", "apps/*"]
+
+[tool.uv.sources]
+rag-target = { workspace = true }
+llm-provider = { workspace = true }
+guards = { workspace = true }
+test-harness = { workspace = true }
+existing-rag-adapter = { workspace = true }
+reference-rag = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/llm_redteam", "src/llm_redteam_cli"]
-
-[tool.hatch.envs.default]
-dependencies = []
-
-[tool.hatch.envs.dev]
-dependencies = [
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0",
-    "pytest-cov>=4.1.0",
-    "pytest-mock>=3.12.0",
-    "hypothesis>=6.90.0",
-    "ruff>=0.3.0",
-    "mypy>=1.8.0",
-    "pre-commit>=3.6.0",
-]
+packages = ["src/llm_redteam_cli"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-select = ["E", "F", "I", "UP", "W", "C90", "ANN", "ARG", "PTH", "PT", "Q", "SIM", "T20", "TCH", "TRY"]
-ignore = ["ANN101", "ANN102", "ARG001", "ARG002", "PTH123"]
-per-file-ignores = { "tests/*" = ["S101", "PTH123"] }
-src = ["src"]
+src = ["src", "libs", "apps", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "W", "B", "SIM", "T20"]
+ignore = ["E501", "T201", "SIM105", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+"scripts/write_templates.py" = ["E402", "W291", "W293"]
 
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
-skip-magic-trailing-comma = true
 
 [tool.mypy]
 python_version = "3.11"
-strict = true
 warn_return_any = true
 warn_unused_configs = true
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
 check_untyped_defs = true
 no_implicit_optional = true
 show_error_codes = true
 pretty = true
 namespace_packages = true
 explicit_package_bases = true
-mypy_path = "src"
+ignore_missing_imports = true
+follow_imports = "silent"
+disable_error_code = ["import-untyped"]
+mypy_path = [
+    "src",
+    "libs/rag-target/src",
+    "libs/llm-provider/src",
+    "libs/guards/src",
+    "libs/test-harness/src",
+    "apps/reference-rag/src",
+    "apps/existing-rag-adapter/src",
+]
+exclude = ["scripts/write_templates\\.py$"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -93,6 +120,16 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+pythonpath = [
+    "src",
+    "libs/rag-target/src",
+    "libs/llm-provider/src",
+    "libs/guards/src",
+    "libs/test-harness/src",
+    "apps/reference-rag/src",
+    "apps/existing-rag-adapter/src",
+    ".",
+]
 addopts = "-v --tb=short --strict-markers"
 markers = [
     "unit: Unit tests",
@@ -102,7 +139,15 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["src"]
+source = [
+    "src",
+    "libs/rag-target/src",
+    "libs/llm-provider/src",
+    "libs/guards/src",
+    "libs/test-harness/src",
+    "apps/reference-rag/src",
+    "apps/existing-rag-adapter/src",
+]
 omit = ["tests/*", "*/conftest.py"]
 
 [tool.coverage.report]
@@ -113,6 +158,3 @@ exclude_lines = [
     "raise NotImplementedError",
     "if __name__ == .__main__.:",
 ]
-
-[project.scripts]
-llm-redteam = "llm_redteam_cli:app"

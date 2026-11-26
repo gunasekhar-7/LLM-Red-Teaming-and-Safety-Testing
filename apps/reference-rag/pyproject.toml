@@ -27,7 +27,7 @@ dependencies = [
     "passlib>=1.7.4",
     "structlog>=24.1.0",
     "prometheus-client>=0.19.0",
-    "guards @ file:///C:/Projects/LLM-Red-Teaming/libs/guards",
+    "guards",
 ]
 
 [project.optional-dependencies]
@@ -42,12 +42,3 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/reference_rag"]
-
-[tool.hatch.metadata]
-allow-direct-references = true
-
-[tool.ruff]
-line-length = 100
-target-version = "py311"
-select = ["E", "F", "I", "UP", "W", "C90", "ANN", "ARG", "PTH", "PT", "Q", "SIM", "T20", "TCH", "TRY"]
-src = ["src"]

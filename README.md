@@ -223,13 +223,15 @@ Reference RAG configured via environment variables (see `.env.example`):
 ```python
 from test_harness import Probe, AttackCategory, AttackSeverity
 
+
 class MyCustomProbe(Probe):
     async def generate_prompts(self, context=None):
         return ["Custom attack prompt 1", "Custom attack prompt 2"]
-    
+
     async def evaluate(self, prompt, response, context=None):
         # Return True if defended, False if attack succeeded
         return "refusal" in response.lower()
+
 
 # Register
 harness.add_probe(MyCustomProbe("my_probe", AttackCategory.RAG_SPECIFIC))
@@ -240,21 +242,22 @@ harness.add_probe(MyCustomProbe("my_probe", AttackCategory.RAG_SPECIFIC))
 ```python
 from rag_target import BaseRAGTarget, RAGResponse
 
+
 class MyRAGTarget(BaseRAGTarget):
     async def query(self, question, **kwargs):
         # Your RAG logic
         return RAGResponse(answer="...", citations=["[1]"])
-    
+
     async def get_context(self, question, **kwargs):
         # Return retrieval context
         pass
-    
+
     async def get_system_prompt(self):
         return "Your system prompt"
-    
+
     async def health_check(self):
         return True
-    
+
     async def close(self):
         pass
 ```
@@ -264,15 +267,16 @@ class MyRAGTarget(BaseRAGTarget):
 ```python
 from llm_provider import BaseLLMProvider, ModelConfig, ProviderType
 
+
 class MyProvider(BaseLLMProvider):
     @property
     def provider_type(self):
         return ProviderType.CUSTOM
-    
+
     async def complete(self, request):
         # Your completion logic
         pass
-    
+
     async def stream(self, request):
         # Your streaming logic
         pass

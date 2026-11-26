@@ -488,9 +488,10 @@ Validation results not available.
 ```"""
 
 import os
-os.makedirs('scripts/templates', exist_ok=True)
-with open('scripts/templates/audit_report.html.j2', 'w', encoding='utf-8') as f:
+
+os.makedirs("scripts/templates", exist_ok=True)
+with open("scripts/templates/audit_report.html.j2", "w", encoding="utf-8") as f:
     f.write(html_template)
-with open('scripts/templates/audit_report.md.j2', 'w', encoding='utf-8') as f:
+with open("scripts/templates/audit_report.md.j2", "w", encoding="utf-8") as f:
     f.write(md_template)
-print('Templates written successfully')
+print("Templates written successfully")

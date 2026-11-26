@@ -86,6 +86,7 @@ test(harness): add regression detection tests
 # libs/test-harness/src/test_harness/probes/my_probe.py
 from test_harness import Probe, AttackCategory, AttackSeverity
 
+
 class MyCustomProbe(Probe):
     def __init__(self):
         super().__init__(
@@ -94,13 +95,10 @@ class MyCustomProbe(Probe):
             severity=AttackSeverity.HIGH,
             description="Description of what this probe tests",
         )
-    
+
     async def generate_prompts(self, context=None):
-        return [
-            "Attack prompt 1",
-            "Attack prompt 2",
-        ]
-    
+        return ["Attack prompt 1", "Attack prompt 2"]
+
     async def evaluate(self, prompt, response, context=None):
         # Return True if DEFENDED, False if attack SUCCEEDED
         return "refusal indicator" in response.lower()
@@ -111,6 +109,7 @@ class MyCustomProbe(Probe):
 ```python
 # scripts/run_baseline.py
 from test_harness.probes.my_probe import MyCustomProbe
+
 
 def create_baseline_probes():
     probes = [...]
@@ -125,11 +124,13 @@ def create_baseline_probes():
 import pytest
 from test_harness.probes.my_probe import MyCustomProbe
 
+
 @pytest.mark.asyncio
 async def test_my_probe_generates_prompts():
     probe = MyCustomProbe()
     prompts = await probe.generate_prompts()
     assert len(prompts) == 2
+
 
 @pytest.mark.asyncio
 async def test_my_probe_evaluates_correctly():
@@ -148,24 +149,25 @@ async def test_my_probe_evaluates_correctly():
 # apps/my-target/src/my_target/__init__.py
 from rag_target import BaseRAGTarget, RAGResponse, RAGContext, RetrievalChunk
 
+
 class MyRAGTarget(BaseRAGTarget):
     def __init__(self, config):
         super().__init__("my-target", config)
         # Initialize your RAG system
-    
+
     async def query(self, question, **kwargs):
         # Your RAG logic
         return RAGResponse(answer="...", citations=["[1]"])
-    
+
     async def get_context(self, question, **kwargs):
         return RAGContext(query=question, chunks=[...])
-    
+
     async def get_system_prompt(self):
         return "Your system prompt"
-    
+
     async def health_check(self):
         return True
-    
+
     async def close(self):
         # Cleanup
         pass
@@ -176,6 +178,7 @@ class MyRAGTarget(BaseRAGTarget):
 ```python
 # scripts/cli.py
 from my_target import MyRAGTarget
+
 
 @app.command()
 def baseline(targets: list[str] = ["reference-rag"]):
@@ -194,22 +197,23 @@ def baseline(targets: list[str] = ["reference-rag"]):
 # libs/llm-provider/src/llm_provider/my_provider.py
 from llm_provider import BaseLLMProvider, ModelConfig, ProviderType, LLMRequest, LLMResponse
 
+
 class MyProvider(BaseLLMProvider):
     @property
     def provider_type(self):
         return ProviderType.CUSTOM
-    
+
     async def complete(self, request: LLMRequest) -> LLMResponse:
         # Your completion logic
         pass
-    
+
     async def stream(self, request: LLMRequest):
         # Your streaming logic
         pass
-    
+
     async def health_check(self):
         return True
-    
+
     async def close(self):
         pass
 ```
@@ -222,6 +226,7 @@ class ProviderFactory:
     def _create_custom(self, config: ModelConfig):
         if config.provider == ProviderType.CUSTOM and config.model_name.startswith("my-"):
             from llm_provider.my_provider import MyProvider
+
             return MyProvider(config)
         raise NotImplementedError(...)
 ```

@@ -2,100 +2,91 @@
 
 from __future__ import annotations
 
-import asyncio
+import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from prometheus_client import Counter, Histogram, generate_latest
-from prometheus_client.openmetrics.exposition import CONTENT_TYPE_LATEST
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from guards import create_default_pipelines
 from reference_rag.config import settings
 from reference_rag.database import close_db, init_db
 from reference_rag.hardened_rag_service import HardenedRAGService
 from reference_rag.routes import router as api_router
-from reference_rag.auth import get_current_tenant
-from guards import create_default_pipelines
+from reference_rag.routes import set_rag_service
 
-
-# Prometheus metrics
-REQUEST_COUNT = Counter(
-    "rag_requests_total",
-    "Total requests",
-    ["method", "endpoint", "status"],
-)
+REQUEST_COUNT = Counter("rag_requests_total", "Total requests", ["method", "endpoint", "status"])
 REQUEST_LATENCY = Histogram(
-    "rag_request_latency_seconds",
-    "Request latency in seconds",
-    ["method", "endpoint"],
+    "rag_request_latency_seconds", "Request latency in seconds", ["method", "endpoint"]
 )
 
 
 class MetricsMiddleware(BaseHTTPMiddleware):
     """Middleware for collecting Prometheus metrics."""
-    
-    async def dispatch(self, request: Request, call_next):
-        start = asyncio.get_event_loop().time()
-        response = await call_next(request)
-        latency = asyncio.get_event_loop().time() - start
-        
+
+    async def dispatch(self, request: Request, call_next: Any) -> Response:
+        start = time.perf_counter()
+        response: Response = await call_next(request)
+        latency = time.perf_counter() - start
+
         REQUEST_COUNT.labels(
-            method=request.method,
-            endpoint=request.url.path,
-            status=response.status_code,
+            method=request.method, endpoint=request.url.path, status=response.status_code
         ).inc()
-        
-        REQUEST_LATENCY.labels(
-            method=request.method,
-            endpoint=request.url.path,
-        ).observe(latency)
-        
+        REQUEST_LATENCY.labels(method=request.method, endpoint=request.url.path).observe(latency)
+
         return response
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan handler."""
-    # Startup
+    settings.validate_security_settings()
     await init_db()
-    
-    # Initialize RAG service with LLM and embeddings
-    global rag_service
-    rag_service = await create_rag_service()
-    
-    yield
-    
-    # Shutdown
-    await close_db()
+    service = await create_rag_service()
+    set_rag_service(service)
+
+    try:
+        yield
+    finally:
+        set_rag_service(None)
+        await close_db()
 
 
 async def create_rag_service() -> HardenedRAGService:
     """Create hardened RAG service with configured LLM, embeddings, and safety guards."""
-    from langchain_openai import ChatOpenAI, OpenAIEmbeddings
     from langchain_anthropic import ChatAnthropic
-    from langchain_community.embeddings import OllamaEmbeddings
     from langchain_community.chat_models import ChatOllama
-    
-    # Create LLM
+    from langchain_community.embeddings import OllamaEmbeddings
+    from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+    from pydantic import SecretStr
+
+    llm_secret = SecretStr(settings.llm_api_key) if settings.llm_api_key else None
+    embed_secret = SecretStr(settings.embedding_api_key) if settings.embedding_api_key else None
+
+    llm: Any
     if settings.llm_provider == "openai":
-        llm = ChatOpenAI(
-            model=settings.llm_model,
-            temperature=settings.llm_temperature,
-            max_tokens=settings.llm_max_tokens,
-            api_key=settings.llm_api_key,
-            base_url=settings.llm_base_url,
-        )
+        openai_kwargs: dict[str, Any] = {
+            "model": settings.llm_model,
+            "temperature": settings.llm_temperature,
+            "max_tokens": settings.llm_max_tokens,
+            "api_key": llm_secret,
+            "base_url": settings.llm_base_url,
+        }
+        llm = ChatOpenAI(**openai_kwargs)
     elif settings.llm_provider == "anthropic":
-        llm = ChatAnthropic(
-            model=settings.llm_model,
-            temperature=settings.llm_temperature,
-            max_tokens=settings.llm_max_tokens,
-            api_key=settings.llm_api_key,
-            base_url=settings.llm_base_url,
-        )
+        anthropic_kwargs: dict[str, Any] = {
+            "model": settings.llm_model,
+            "temperature": settings.llm_temperature,
+            "max_tokens": settings.llm_max_tokens,
+            "api_key": llm_secret,
+            "base_url": settings.llm_base_url,
+        }
+        llm = ChatAnthropic(**anthropic_kwargs)
     elif settings.llm_provider == "ollama":
         llm = ChatOllama(
             model=settings.llm_model,
@@ -104,25 +95,23 @@ async def create_rag_service() -> HardenedRAGService:
         )
     else:
         raise ValueError(f"Unknown LLM provider: {settings.llm_provider}")
-    
-    # Create embeddings
+
+    embeddings: Any
     if settings.embedding_provider == "openai":
         embeddings = OpenAIEmbeddings(
             model=settings.embedding_model,
-            api_key=settings.embedding_api_key,
+            api_key=embed_secret,
             base_url=settings.embedding_base_url,
         )
     elif settings.embedding_provider == "ollama":
         embeddings = OllamaEmbeddings(
             model=settings.embedding_model,
-            base_url=settings.embedding_base_url,
+            base_url=settings.embedding_base_url or "http://localhost:11434",
         )
     else:
         raise ValueError(f"Unknown embedding provider: {settings.embedding_provider}")
-    
-    # Create guard pipelines
+
     pipelines = create_default_pipelines()
-    
     return HardenedRAGService(
         llm=llm,
         embeddings=embeddings,
@@ -141,33 +130,26 @@ app = FastAPI(
     redoc_url="/redoc" if settings.debug else None,
 )
 
-# CORS
+allow_wildcard = "*" in settings.cors_origins
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
-    allow_credentials=True,
+    allow_credentials=not allow_wildcard,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Metrics
 app.add_middleware(MetricsMiddleware)
-
-# Routes
 app.include_router(api_router, prefix="/api/v1")
 
 
 @app.get("/metrics")
-async def metrics():
+async def metrics() -> Response:
     """Prometheus metrics endpoint."""
-    return JSONResponse(
-        content=generate_latest(),
-        media_type=CONTENT_TYPE_LATEST,
-    )
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/")
-async def root():
+async def root() -> dict[str, Any]:
     """Root endpoint."""
     return {
         "name": settings.app_name,
@@ -176,20 +158,14 @@ async def root():
     }
 
 
-# Global exception handler
 @app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal server error"},
-    )
+async def global_exception_handler(_request: Request, _exc: Exception) -> JSONResponse:
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(
-        "reference_rag.main:app",
-        host=settings.host,
-        port=settings.port,
-        reload=settings.debug,
+        "reference_rag.main:app", host=settings.host, port=settings.port, reload=settings.debug
     )

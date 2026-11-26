@@ -1,20 +1,21 @@
 """Unit tests for LLM provider layer."""
+
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from collections.abc import AsyncIterator
 
 import pytest
-
 from llm_provider import (
+    BaseLLMProvider,
     LLMMessage,
-    LLMProvider,
     LLMRequest,
     LLMResponse,
+    LLMSettings,
     ModelConfig,
+    ModelRole,
     ProviderType,
-    BaseLLMProvider,
 )
+from llm_provider.factory import ProviderFactory
 
 
 class DummyProvider(BaseLLMProvider):
@@ -25,10 +26,10 @@ class DummyProvider(BaseLLMProvider):
         return ProviderType.CUSTOM
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
-        raise NotImplementedError
+        return LLMResponse(content="ok", model=request.model, provider=self.provider_type)
 
-    async def stream(self, request: LLMRequest) -> "AsyncIterator[str]":
-        raise NotImplementedError
+    async def stream(self, request: LLMRequest) -> AsyncIterator[str]:
+        yield "ok"
 
     async def health_check(self) -> bool:
         return True
@@ -37,10 +38,11 @@ class DummyProvider(BaseLLMProvider):
         pass
 
 
+@pytest.mark.unit
 class TestModelConfig:
-    """Test ModelConfig pydantic model."""
+    """Test ModelConfig dataclass."""
 
-    def test_model_config_creation(self):
+    def test_model_config_creation(self) -> None:
         config = ModelConfig(
             provider=ProviderType.OPENAI,
             model_name="gpt-4o-mini",
@@ -50,60 +52,52 @@ class TestModelConfig:
         assert config.provider.value == "openai"
         assert config.model_name == "gpt-4o-mini"
         assert config.api_key == "sk-test"
+        assert config.extra_params == {}
 
-    def test_model_config_defaults(self):
-        config = ModelConfig(
-            provider=ProviderType.OPENAI,
-            model_name="gpt-4o-mini",
-        )
-        assert config.role is not None
+    def test_model_config_defaults(self) -> None:
+        config = ModelConfig(provider=ProviderType.OPENAI, model_name="gpt-4o-mini")
+        assert config.role == ModelRole.GENERATOR
         assert config.base_url is None
 
 
-class TestLLMRequest:
-    """Test LLMRequest model."""
+@pytest.mark.unit
+class TestLLMModels:
+    """Test LLMRequest and LLMMessage models."""
 
-    def test_llm_request_creation(self):
+    def test_llm_request_creation(self) -> None:
         request = LLMRequest(
-            messages=[LLMMessage(role="user", content="Hello")],
-            model="gpt-4o-mini",
+            messages=[LLMMessage(role="user", content="Hello")], model="gpt-4o-mini"
         )
         assert len(request.messages) == 1
         assert request.messages[0].role == "user"
 
-
-class TestBaseProvider:
-    """Test BaseLLMProvider base class."""
-
-    def test_provider_initialization(self):
-        config = ModelConfig(
-            provider=ProviderType.OPENAI,
-            model_name="gpt-4o-mini",
-            api_key="sk-test",
-        )
-        provider = DummyProvider(config)
-        assert provider is not None
-
-    async def test_provider_health_check(self):
-        config = ModelConfig(
-            provider=ProviderType.OPENAI,
-            model_name="gpt-4o-mini",
-            api_key="sk-test",
-        )
-        provider = DummyProvider(config)
-        result = await provider.health_check()
-        assert result is True
-
-
-class TestLLMMessage:
-    """Test LLMMessage model."""
-
-    def test_message_creation(self):
-        msg = LLMMessage(role="user", content="Hello world")
-        assert msg.role == "user"
-        assert msg.content == "Hello world"
-
-    def test_message_with_system(self):
+    def test_message_with_system(self) -> None:
         msg = LLMMessage(role="system", content="You are helpful")
         assert msg.role == "system"
         assert msg.content == "You are helpful"
+
+
+@pytest.mark.unit
+class TestProviderFactoryAndBase:
+    """Test BaseLLMProvider and ProviderFactory."""
+
+    def test_provider_initialization(self) -> None:
+        config = ModelConfig(
+            provider=ProviderType.OPENAI, model_name="gpt-4o-mini", api_key="sk-test"
+        )
+        provider = DummyProvider(config)
+        assert provider.config == config
+
+    async def test_provider_health_check(self) -> None:
+        config = ModelConfig(
+            provider=ProviderType.OPENAI, model_name="gpt-4o-mini", api_key="sk-test"
+        )
+        provider = DummyProvider(config)
+        assert await provider.health_check() is True
+
+    async def test_factory_creates_ollama_providers(self) -> None:
+        factory = ProviderFactory(LLMSettings())
+        providers = factory.create_default_providers()
+        assert "ollama-llama31" in providers
+        assert "ollama-embed" in providers
+        await factory.close_all()

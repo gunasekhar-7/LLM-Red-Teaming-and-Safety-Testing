@@ -213,6 +213,7 @@ class MyProvider(BaseLLMProvider):
 ```python
 class MyGuard(BaseGuard):
     _category = GuardCategory.INPUT  # or RETRIEVAL, OUTPUT
+
     async def check(self, content, context): ...
 ```
 

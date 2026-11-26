@@ -32,9 +32,3 @@ all = ["openai", "anthropic", "ollama", "litellm"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/llm_provider"]
-
-[tool.ruff]
-line-length = 100
-target-version = "py311"
-select = ["E", "F", "I", "UP", "W", "C90", "ANN", "ARG", "PTH", "PT", "Q", "SIM", "T20", "TCH", "TRY"]
-src = ["src"]

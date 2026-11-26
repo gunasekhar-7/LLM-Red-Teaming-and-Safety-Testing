@@ -1,52 +1,34 @@
 #!/bin/bash
 # Entrypoint for LLM Red-Teaming test runner container
-# Handles initialization, environment validation, and command routing
-
 set -euo pipefail
 
-# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-log_info() {
-    echo -e "${BLUE}[INFO]${NC} $*"
-}
+log_info() { echo -e "${BLUE}[INFO]${NC} $*"; }
+log_success() { echo -e "${GREEN}[SUCCESS]${NC} $*"; }
+log_warning() { echo -e "${YELLOW}[WARNING]${NC} $*"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
-log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $*"
-}
-
-log_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $*"
-}
-
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $*"
-}
-
-# Check if running as root (should not happen)
 if [ "$(id -u)" = "0" ]; then
     log_error "Container should not run as root"
     exit 1
 fi
 
-# Validate environment
+export PYTHONPATH="/app/src:/app/libs/rag-target/src:/app/libs/llm-provider/src:/app/libs/guards/src:/app/libs/test-harness/src:/app/apps/reference-rag/src:/app/apps/existing-rag-adapter/src:${PYTHONPATH:-}"
+
 validate_environment() {
     log_info "Validating environment..."
-    
-    # Check Python availability
     if ! command -v python &> /dev/null; then
         log_error "Python not found in PATH"
         exit 1
     fi
-    
-    # Check critical imports
+
     python -c "
 import sys
-sys.path.insert(0, '/app/src')
 try:
     from llm_redteam_cli import app
     from test_harness import TestHarness
@@ -56,46 +38,38 @@ except ImportError as e:
     print(f'Import error: {e}')
     sys.exit(1)
 " || exit 1
-    
+
     log_success "Environment validation passed"
 }
 
-# Initialize database if needed
 init_database() {
     if [ "${INIT_DB:-false}" = "true" ]; then
         log_info "Initializing database..."
         python -c "
-import sys
-sys.path.insert(0, '/app/apps/reference_rag')
-from reference_rag.database import init_db
 import asyncio
+from reference_rag.database import init_db
 asyncio.run(init_db())
 " && log_success "Database initialized" || log_warning "Database init skipped/failed"
     fi
 }
 
-# Wait for dependencies
 wait_for_dependencies() {
     log_info "Waiting for dependencies..."
-    
-    # Wait for PostgreSQL
+
     if [ -n "${DATABASE_URL:-}" ]; then
         log_info "Waiting for PostgreSQL..."
         for i in {1..30}; do
             if python -c "
-import sys
-import os
-import asyncpg
-import asyncio
+import os, sys, asyncio, asyncpg
 async def check():
     try:
-        conn = await asyncpg.connect(os.environ['DATABASE_URL'])
+        dsn = os.environ['DATABASE_URL'].replace('postgresql+asyncpg://', 'postgresql://')
+        conn = await asyncpg.connect(dsn)
         await conn.close()
         return True
-    except:
+    except Exception:
         return False
-result = asyncio.run(check())
-sys.exit(0 if result else 1)
+sys.exit(0 if asyncio.run(check()) else 1)
 " 2>/dev/null; then
                 log_success "PostgreSQL is ready"
                 break
@@ -103,8 +77,7 @@ sys.exit(0 if result else 1)
             sleep 2
         done
     fi
-    
-    # Wait for Ollama
+
     if [ -n "${OLLAMA_BASE_URL:-}" ]; then
         log_info "Waiting for Ollama..."
         for i in {1..30}; do
@@ -117,33 +90,28 @@ sys.exit(0 if result else 1)
     fi
 }
 
-# Print banner
 print_banner() {
     echo ""
-    echo "╔══════════════════════════════════════════════════════════════╗"
-    echo "║         LLM Red-Teaming Framework - Test Runner             ║"
-    echo "║         Version: 0.1.0                                      ║"
-    echo "╚══════════════════════════════════════════════════════════════╝"
+    echo "================================================================"
+    echo "         LLM Red-Teaming Framework - Test Runner"
+    echo "         Version: 0.1.0"
+    echo "================================================================"
     echo ""
 }
 
-# Main execution
 main() {
     print_banner
     validate_environment
     wait_for_dependencies
     init_database
-    
-    # If no arguments provided, show help
+
     if [ $# -eq 0 ]; then
         python -m llm_redteam_cli --help
         exit 0
     fi
-    
-    # Execute command
+
     log_info "Executing: $*"
     exec python -m llm_redteam_cli "$@"
 }
 
-# Run main
 main "$@"

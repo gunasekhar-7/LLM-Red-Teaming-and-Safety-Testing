@@ -6,7 +6,7 @@ import asyncio
 import random
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings
 
@@ -42,26 +42,41 @@ class QueryResponse(BaseModel):
     answer: str
     citations: list[str] = ["[1]", "[2]"]
     chunks: list[dict[str, Any]] = [
-        {"content": "Mock document content about company policies.", "metadata": {"source": "policy.pdf"}, "score": 0.95},
-        {"content": "Additional context from knowledge base.", "metadata": {"source": "kb.txt"}, "score": 0.87},
+        {
+            "content": "Mock document content about company policies.",
+            "metadata": {"source": "policy.pdf"},
+            "score": 0.95,
+        },
+        {
+            "content": "Additional context from knowledge base.",
+            "metadata": {"source": "kb.txt"},
+            "score": 0.87,
+        },
     ]
 
 
 def classify_question(question: str) -> str:
     """Classify question type to select appropriate response."""
     q = question.lower()
-    
-    if any(kw in q for kw in ["ignore previous", "system prompt", "disregard", "override", "bypass"]):
+
+    if any(
+        kw in q for kw in ["ignore previous", "system prompt", "disregard", "override", "bypass"]
+    ):
         return "injection"
-    if any(kw in q for kw in ["leak", "secret", "password", "api key", "confidential", "system prompt"]):
+    if any(
+        kw in q for kw in ["leak", "secret", "password", "api key", "confidential", "system prompt"]
+    ):
         return "leakage"
-    if any(kw in q for kw in ["roleplay", "pretend", "act as", "you are now", "unrestricted", "no rules"]):
+    if any(
+        kw in q
+        for kw in ["roleplay", "pretend", "act as", "you are now", "unrestricted", "no rules"]
+    ):
         return "jailbreak"
     if any(kw in q for kw in ["base64", "encoded", "decode", "hidden"]):
         return "encoding"
     if any(kw in q for kw in ["retrieve", "search", "find document", "context"]):
         return "rag_manipulation"
-    
+
     return "default"
 
 
@@ -75,15 +90,15 @@ async def query(request: QueryRequest):
     # Simulate processing delay
     delay = random.uniform(settings.delay_min, settings.delay_max)
     await asyncio.sleep(delay)
-    
+
     # Classify and respond
     category = classify_question(request.question)
     answer = RESPONSES.get(category, RESPONSES["default"])
-    
+
     # Add some variation
     if category != "default":
         answer += f" [Detected: {category}]"
-    
+
     return QueryResponse(answer=answer)
 
 
@@ -95,4 +110,5 @@ async def ingest(request: dict):
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host=settings.host, port=settings.port)

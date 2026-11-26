@@ -61,7 +61,11 @@ jobs:
       - name: Check for secrets
         run: |
           pip install detect-secrets
-          detect-secrets scan --baseline .secrets.baseline || true
+          if [ -f .secrets.baseline ]; then
+            detect-secrets scan --baseline .secrets.baseline
+          else
+            detect-secrets scan --exclude-files 'results/.*'
+          fi
 
   unit-tests:
     name: Unit Tests
@@ -84,7 +88,7 @@ jobs:
           uv sync --all-extras
 
       - name: Run unit tests
-        run: uv run pytest -m unit -v --tb=short --cov=src --cov-report=xml
+        run: uv run pytest -m unit -v --tb=short --cov --cov-report=xml
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4
@@ -115,7 +119,7 @@ jobs:
       - name: Wait for services
         run: |
           for i in {1..30}; do
-            if curl -sf http://localhost:8000/health && curl -sf http://localhost:8001/health; then
+            if curl -sf http://localhost:8000/api/v1/health && curl -sf http://localhost:8001/health; then
               echo "Services ready"
               exit 0
             fi

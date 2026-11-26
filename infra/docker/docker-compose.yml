@@ -41,8 +41,8 @@ services:
 
   reference-rag:
     build:
-      context: ../../apps/reference-rag
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: apps/reference-rag/Dockerfile
     container_name: reference-rag
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/ragdb
@@ -53,6 +53,7 @@ services:
       - EMBEDDING_MODEL=nomic-embed-text
       - EMBEDDING_BASE_URL=http://ollama:11434
       - AUTH_ENABLED=false
+      - DEBUG=true
       - LOG_LEVEL=DEBUG
     ports:
       - "8000:8000"
@@ -62,7 +63,7 @@ services:
       ollama:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
       interval: 10s
       timeout: 5s
       retries: 5

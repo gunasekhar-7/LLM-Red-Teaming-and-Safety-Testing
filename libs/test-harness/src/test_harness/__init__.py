@@ -7,23 +7,28 @@ import json
 import time
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
-import aiohttp
+import numpy as np
 import pandas as pd
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+from llm_provider import LLMProvider
 from pydantic import BaseModel, Field
+from rag_target import RAGResponse, RAGTarget
+from scipy.stats import chi2_contingency
+from statsmodels.stats.contingency_tables import mcnemar
+from statsmodels.stats.proportion import proportion_effectsize
 from tqdm.asyncio import tqdm_asyncio
 
-from rag_target import RAGTarget, RAGResponse
-from llm_provider import LLMProvider, LLMRequest, ModelConfig, ProviderType
 
-
-class AttackCategory(str, Enum):
+class AttackCategory(StrEnum):
     """Categories of attacks."""
+
     PROMPT_INJECTION = "prompt_injection"
     JAILBREAK = "jailbreak"
     DATA_LEAKAGE = "data_leakage"
@@ -33,8 +38,9 @@ class AttackCategory(str, Enum):
     MULTITURN = "multiturn"
 
 
-class AttackSeverity(str, Enum):
+class AttackSeverity(StrEnum):
     """Severity levels for findings."""
+
     CRITICAL = "critical"
     HIGH = "high"
     MEDIUM = "medium"
@@ -45,8 +51,9 @@ class AttackSeverity(str, Enum):
 @dataclass
 class AttackResult:
     """Result of a single attack attempt."""
+
     id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     target_name: str = ""
     provider_name: str = ""
     probe_name: str = ""
@@ -54,11 +61,16 @@ class AttackResult:
     severity: AttackSeverity = AttackSeverity.MEDIUM
     prompt: str = ""
     response: str = ""
-    passed: bool = False  # True = attack blocked/failed, False = attack succeeded
+    passed: bool = False  # True = attack blocked/defended, False = attack succeeded
     evidence: dict[str, Any] = field(default_factory=dict)
     latency_ms: float = 0.0
     error: str | None = None
-    
+
+    @property
+    def failed(self) -> bool:
+        """Return True if the attack succeeded (defense failed)."""
+        return not self.passed
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
@@ -66,8 +78,8 @@ class AttackResult:
             "target_name": self.target_name,
             "provider_name": self.provider_name,
             "probe_name": self.probe_name,
-            "category": self.category.value if hasattr(self.category, 'value') else self.category,
-            "severity": self.severity.value if hasattr(self.severity, 'value') else self.severity,
+            "category": self.category.value if hasattr(self.category, "value") else self.category,
+            "severity": self.severity.value if hasattr(self.severity, "value") else self.severity,
             "prompt": self.prompt,
             "response": self.response,
             "passed": self.passed,
@@ -79,7 +91,7 @@ class AttackResult:
 
 class Probe(ABC):
     """Abstract base class for attack probes."""
-    
+
     def __init__(
         self,
         name: str,
@@ -91,17 +103,17 @@ class Probe(ABC):
         self.category = category
         self.severity = severity
         self.description = description
-    
+
     @abstractmethod
     async def generate_prompts(self, context: dict[str, Any] | None = None) -> list[str]:
         """Generate attack prompts for this probe."""
-        pass
-    
+
     @abstractmethod
-    async def evaluate(self, prompt: str, response: str, context: dict[str, Any] | None = None) -> bool:
-        """Evaluate if attack succeeded. Returns True if attack FAILED (defended)."""
-        pass
-    
+    async def evaluate(
+        self, prompt: str, response: str, context: dict[str, Any] | None = None
+    ) -> bool:
+        """Evaluate if attack was defended. Return True if defended, False if succeeded."""
+
     async def run(
         self,
         target: RAGTarget,
@@ -110,91 +122,96 @@ class Probe(ABC):
     ) -> list[AttackResult]:
         """Run this probe against a target."""
         prompts = await self.generate_prompts(context)
-        results = []
-        
+        results: list[AttackResult] = []
+
         for prompt in prompts:
             start = time.perf_counter()
             try:
                 rag_response: RAGResponse = await target.query(prompt)
                 latency_ms = (time.perf_counter() - start) * 1000
-                
                 passed = await self.evaluate(prompt, rag_response.answer, context)
-                
-                results.append(AttackResult(
-                    target_name=target.name,
-                    provider_name=provider.config.model_name if provider else "unknown",
-                    probe_name=self.name,
-                    category=self.category,
-                    severity=self.severity,
-                    prompt=prompt,
-                    response=rag_response.answer,
-                    passed=passed,
-                    evidence={
-                        "citations": rag_response.citations,
-                        "metadata": rag_response.metadata,
-                    },
-                    latency_ms=latency_ms,
-                ))
+
+                results.append(
+                    AttackResult(
+                        target_name=target.name,
+                        provider_name=provider.config.model_name if provider else "default",
+                        probe_name=self.name,
+                        category=self.category,
+                        severity=self.severity,
+                        prompt=prompt,
+                        response=rag_response.answer,
+                        passed=passed,
+                        evidence={
+                            "citations": rag_response.citations,
+                            "metadata": rag_response.metadata,
+                        },
+                        latency_ms=latency_ms,
+                    )
+                )
             except Exception as e:
                 latency_ms = (time.perf_counter() - start) * 1000
-                results.append(AttackResult(
-                    target_name=target.name,
-                    provider_name=provider.config.model_name if provider else "unknown",
-                    probe_name=self.name,
-                    category=self.category,
-                    severity=self.severity,
-                    prompt=prompt,
-                    response="",
-                    passed=True,  # Error = defended
-                    evidence={},
-                    latency_ms=latency_ms,
-                    error=str(e),
-                ))
-        
+                results.append(
+                    AttackResult(
+                        target_name=target.name,
+                        provider_name=provider.config.model_name if provider else "default",
+                        probe_name=self.name,
+                        category=self.category,
+                        severity=self.severity,
+                        prompt=prompt,
+                        response="",
+                        passed=False,
+                        evidence={},
+                        latency_ms=latency_ms,
+                        error=str(e),
+                    )
+                )
+
         return results
 
 
 class GarakProbeAdapter(Probe):
     """Adapter to run Garak probes through our harness."""
-    
+
     def __init__(
         self,
         garak_probe_class: type,
         name: str | None = None,
         category: AttackCategory = AttackCategory.PROMPT_INJECTION,
         severity: AttackSeverity = AttackSeverity.MEDIUM,
-        **garak_params,
+        **garak_params: Any,
     ):
         probe_name = name or garak_probe_class.__name__
         super().__init__(probe_name, category, severity)
         self.garak_probe_class = garak_probe_class
         self.garak_params = garak_params
-        self._garak_probe = None
-    
-    async def _get_garak_probe(self):
+        self._garak_probe: Any = None
+
+    async def _get_garak_probe(self) -> Any:
         if self._garak_probe is None:
             self._garak_probe = self.garak_probe_class(**self.garak_params)
         return self._garak_probe
-    
+
     async def generate_prompts(self, context: dict[str, Any] | None = None) -> list[str]:
         probe = await self._get_garak_probe()
-        # Garak probes have a `prompts` property or `generate` method
         if hasattr(probe, "prompts"):
             return list(probe.prompts)
-        elif hasattr(probe, "generate"):
-            return await probe.generate()
+        if hasattr(probe, "generate"):
+            generated = await probe.generate()
+            return list(generated)
         return []
-    
-    async def evaluate(self, prompt: str, response: str, context: dict[str, Any] | None = None) -> bool:
+
+    async def evaluate(
+        self, prompt: str, response: str, context: dict[str, Any] | None = None
+    ) -> bool:
         probe = await self._get_garak_probe()
-        # Garak uses detectors to evaluate
         if hasattr(probe, "detector") and probe.detector:
-            return not probe.detector.detect(response)  # True if NOT detected (defended)
-        return True  # Default to defended if no detector
+            return not bool(probe.detector.detect(response))
+        return True
 
 
 class PromptFooTestCase(BaseModel):
     """PromptFoo test case format."""
+
     vars: dict[str, str]
     assertions: list[dict[str, Any]] = Field(default_factory=list, alias="assert")
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -202,6 +219,7 @@ class PromptFooTestCase(BaseModel):
 
 class PromptFooSuite(BaseModel):
     """PromptFoo test suite."""
+
     description: str = ""
     prompts: list[str] = Field(default_factory=list)
     providers: list[dict[str, Any]] = Field(default_factory=list)
@@ -211,57 +229,69 @@ class PromptFooSuite(BaseModel):
 
 class TestHarness:
     """Main test harness for running red-teaming evaluations."""
-    
+
+    __test__ = False  # Prevent pytest from collecting this class as a test suite
+
     def __init__(
         self,
-        targets: list[RAGTarget],
+        targets: Sequence[RAGTarget],
         providers: dict[str, LLMProvider] | None = None,
-        probes: list[Probe] | None = None,
+        probes: Sequence[Probe] | None = None,
         output_dir: Path | str = "results",
     ):
-        self.targets = targets
+        self.targets = list(targets)
         self.providers = providers or {}
-        self.probes = probes or []
+        self.probes = list(probes) if probes else []
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.results: list[AttackResult] = []
-    
+
     def add_probe(self, probe: Probe) -> None:
         self.probes.append(probe)
-    
+
     def add_target(self, target: RAGTarget) -> None:
         self.targets.append(target)
-    
+
     async def run_all(
         self,
         max_concurrent: int = 5,
         progress: bool = True,
     ) -> list[AttackResult]:
-        """Run all probes against all targets."""
+        """Run all probes against all targets with bounded concurrency."""
+        semaphore = asyncio.Semaphore(max(1, max_concurrent))
         tasks = []
-        
+
+        async def _bounded_run(
+            probe: Probe,
+            target: RAGTarget,
+            provider: LLMProvider | None,
+        ) -> list[AttackResult]:
+            async with semaphore:
+                return await self._run_probe_target(probe, target, provider)
+
         for target in self.targets:
             for probe in self.probes:
-                # Run with each provider if available
                 if self.providers:
-                    for provider_name, provider in self.providers.items():
-                        tasks.append(self._run_probe_target(probe, target, provider))
+                    for provider in self.providers.values():
+                        tasks.append(_bounded_run(probe, target, provider))
                 else:
-                    tasks.append(self._run_probe_target(probe, target, None))
-        
+                    tasks.append(_bounded_run(probe, target, None))
+
+        if not tasks:
+            return []
+
         if progress:
             results = await tqdm_asyncio.gather(*tasks, desc="Running probes")
         else:
             results = await asyncio.gather(*tasks)
-        
-        # Flatten results
-        all_results = []
+
+        all_results: list[AttackResult] = []
         for result_list in results:
             all_results.extend(result_list)
-        
+
         self.results.extend(all_results)
         return all_results
-    
+
     async def _run_probe_target(
         self,
         probe: Probe,
@@ -269,89 +299,86 @@ class TestHarness:
         provider: LLMProvider | None,
     ) -> list[AttackResult]:
         return await probe.run(target, provider)
-    
+
     def get_results_df(self) -> pd.DataFrame:
         """Get results as pandas DataFrame."""
         return pd.DataFrame([r.to_dict() for r in self.results])
-    
+
     def save_results(self, filename: str | None = None) -> Path:
         """Save results to JSONL and CSV."""
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         base = filename or f"results_{timestamp}"
-        
+
         jsonl_path = self.output_dir / f"{base}.jsonl"
         csv_path = self.output_dir / f"{base}.csv"
-        
-        # JSONL
-        with open(jsonl_path, "w") as f:
+
+        with open(jsonl_path, "w", encoding="utf-8") as f:
             for result in self.results:
                 f.write(json.dumps(result.to_dict()) + "\n")
-        
-        # CSV
+
         df = self.get_results_df()
         df.to_csv(csv_path, index=False)
-        
+
         return jsonl_path
-    
+
     def generate_summary(self) -> dict[str, Any]:
         """Generate summary statistics."""
         if not self.results:
             return {}
-        
+
         df = self.get_results_df()
-        
-        summary = {
+        df["failed"] = ~df["passed"]
+
+        return {
             "total_attacks": len(df),
             "total_passed": int(df["passed"].sum()),
-            "total_failed": int((~df["passed"]).sum()),
-            "overall_failure_rate": float((~df["passed"]).mean()),
-            "by_category": df.groupby("category")["passed"].agg(["mean", "count"]).to_dict(),
-            "by_target": df.groupby("target_name")["passed"].agg(["mean", "count"]).to_dict(),
-            "by_provider": df.groupby("provider_name")["passed"].agg(["mean", "count"]).to_dict(),
-            "by_probe": df.groupby("probe_name")["passed"].agg(["mean", "count"]).to_dict(),
-            "by_severity": df.groupby("severity")["passed"].agg(["mean", "count"]).to_dict(),
+            "total_failed": int(df["failed"].sum()),
+            "overall_failure_rate": float(df["failed"].mean()),
+            "by_category": df.groupby("category")["failed"].agg(["mean", "count"]).to_dict(),
+            "by_target": df.groupby("target_name")["failed"].agg(["mean", "count"]).to_dict(),
+            "by_provider": df.groupby("provider_name")["failed"].agg(["mean", "count"]).to_dict(),
+            "by_probe": df.groupby("probe_name")["failed"].agg(["mean", "count"]).to_dict(),
+            "by_severity": df.groupby("severity")["failed"].agg(["mean", "count"]).to_dict(),
             "avg_latency_ms": float(df["latency_ms"].mean()),
             "errors": int(df["error"].notna().sum()),
         }
-        
-        return summary
-    
+
     def generate_report(self, template_path: Path | None = None) -> Path:
-        """Generate HTML report from results."""
-        from jinja2 import Environment, FileSystemLoader
-        
+        """Generate HTML report from results with HTML autoescaping."""
         if template_path is None:
             template_path = Path(__file__).parent / "templates" / "report.html.j2"
-        
+
         if not template_path.exists():
-            # Create default template
             template_path.parent.mkdir(parents=True, exist_ok=True)
             self._create_default_template(template_path)
-        
-        env = Environment(loader=FileSystemLoader(template_path.parent))
+
+        env = Environment(
+            loader=FileSystemLoader(template_path.parent),
+            autoescape=select_autoescape(["html", "xml", "j2"]),
+        )
         template = env.get_template(template_path.name)
-        
+
         summary = self.generate_summary()
         df = self.get_results_df()
-        
-        # Top failures
-        failures = df[~df["passed"]].sort_values("severity", ascending=False).head(20)
-        
+        if not df.empty:
+            failures = df[~df["passed"]].sort_values("severity", ascending=False).head(20)
+            failure_records = failures.to_dict("records")
+        else:
+            failure_records = []
+
         html = template.render(
             summary=summary,
-            failures=failures.to_dict("records"),
-            timestamp=datetime.utcnow().isoformat(),
+            failures=failure_records,
+            timestamp=datetime.now(UTC).isoformat(),
             total_results=len(self.results),
         )
-        
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+
+        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         report_path = self.output_dir / f"report_{timestamp}.html"
-        
-        with open(report_path, "w") as f:
-            f.write(html)
-        
+        report_path.write_text(html, encoding="utf-8")
+
         return report_path
-    
+
     def _create_default_template(self, path: Path) -> None:
         """Create default HTML report template."""
         template = """<!DOCTYPE html>
@@ -371,42 +398,27 @@ class TestHarness:
         th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
         th { background: #f8f9fa; }
         tr:hover { background: #f8f9fa; }
-        .chart { margin: 20px 0; }
     </style>
 </head>
 <body>
     <h1>LLM Red-Teaming Security Assessment Report</h1>
     <p>Generated: {{ timestamp }}</p>
     <p>Total Tests: {{ total_results }}</p>
-    
+
     <h2>Summary</h2>
     <div class="metric">
-        <div class="metric-value">{{ "%.1f"|format(summary.overall_failure_rate * 100) }}%</div>
+        <div class="metric-value">{{ "%.1f"|format((summary.overall_failure_rate | default(0)) * 100) }}%</div>
         <div class="metric-label">Overall Failure Rate</div>
     </div>
     <div class="metric">
-        <div class="metric-value">{{ summary.total_failed }}</div>
+        <div class="metric-value">{{ summary.total_failed | default(0) }}</div>
         <div class="metric-label">Attacks Succeeded</div>
     </div>
     <div class="metric">
-        <div class="metric-value">{{ summary.total_passed }}</div>
+        <div class="metric-value">{{ summary.total_passed | default(0) }}</div>
         <div class="metric-label">Attacks Blocked</div>
     </div>
-    
-    <h2>Failure Rate by Category</h2>
-    <table>
-        <tr><th>Category</th><th>Failure Rate</th><th>Count</th></tr>
-        {% for cat, data in summary.by_category.mean.items() %}
-        <tr>
-            <td>{{ cat }}</td>
-            <td class="{{ 'critical' if data > 0.5 else 'high' if data > 0.2 else 'medium' if data > 0.1 else 'low' }}">
-                {{ "%.1f"|format(data * 100) }}%
-            </td>
-            <td>{{ summary.by_category.count[cat] }}</td>
-        </tr>
-        {% endfor %}
-    </table>
-    
+
     <h2>Top Findings</h2>
     <table>
         <tr><th>ID</th><th>Target</th><th>Probe</th><th>Category</th><th>Severity</th><th>Prompt</th><th>Response</th></tr>
@@ -417,19 +429,19 @@ class TestHarness:
             <td>{{ f.probe_name }}</td>
             <td>{{ f.category }}</td>
             <td class="{{ f.severity }}">{{ f.severity }}</td>
-            <td>{{ f.prompt[:100] }}...</td>
-            <td>{{ f.response[:100] }}...</td>
+            <td>{{ f.prompt[:100] }}</td>
+            <td>{{ f.response[:100] }}</td>
         </tr>
         {% endfor %}
     </table>
 </body>
 </html>"""
-        path.write_text(template)
+        path.write_text(template, encoding="utf-8")
 
 
 class ComparativeHarness:
     """Harness for comparing baseline vs mitigated results."""
-    
+
     def __init__(
         self,
         baseline_results: list[AttackResult],
@@ -437,97 +449,155 @@ class ComparativeHarness:
     ):
         self.baseline = baseline_results
         self.mitigated = mitigated_results
-    
+
+    @staticmethod
+    def _compute_significance(
+        base_df: pd.DataFrame,
+        mit_df: pd.DataFrame,
+    ) -> float:
+        """Use paired McNemar's test when prompts align, with safe fallback."""
+        merged = pd.merge(
+            base_df[["target_name", "probe_name", "prompt", "passed"]],
+            mit_df[["target_name", "probe_name", "prompt", "passed"]],
+            on=["target_name", "probe_name", "prompt"],
+            suffixes=("_base", "_mit"),
+        )
+
+        if len(merged) > 0 and len(merged) == len(base_df) == len(mit_df):
+            both_pass = int(((merged["passed_base"]) & (merged["passed_mit"])).sum())
+            pass_to_fail = int(((merged["passed_base"]) & (~merged["passed_mit"])).sum())
+            fail_to_pass = int(((~merged["passed_base"]) & (merged["passed_mit"])).sum())
+            both_fail = int(((~merged["passed_base"]) & (~merged["passed_mit"])).sum())
+
+            if pass_to_fail + fail_to_pass == 0:
+                return 1.0
+
+            table = np.array([[both_pass, pass_to_fail], [fail_to_pass, both_fail]])
+            exact = (pass_to_fail + fail_to_pass) < 25
+            res = mcnemar(table, exact=exact, correction=not exact)
+            return float(res.pvalue)
+
+        base_failed = int((~base_df["passed"]).sum())
+        base_passed = int(base_df["passed"].sum())
+        mit_failed = int((~mit_df["passed"]).sum())
+        mit_passed = int(mit_df["passed"].sum())
+
+        contingency = np.array([[base_failed, base_passed], [mit_failed, mit_passed]])
+        if np.any(contingency.sum(axis=0) == 0) or np.any(contingency.sum(axis=1) == 0):
+            return 1.0
+
+        _, p_value, _, _ = chi2_contingency(contingency)
+        return float(p_value)
+
     def compare(self) -> dict[str, Any]:
         """Compare baseline vs mitigated results."""
-        import scipy.stats as stats
-        import numpy as np
-        
-        # Convert to DataFrames
         base_df = pd.DataFrame([r.to_dict() for r in self.baseline])
         mitigated_df = pd.DataFrame([r.to_dict() for r in self.mitigated])
-        
-        # Overall comparison
-        base_failed = (~base_df["passed"]).sum()
+
+        if base_df.empty or mitigated_df.empty:
+            return {
+                "overall": {
+                    "baseline_failure_rate": 0.0,
+                    "mitigated_failure_rate": 0.0,
+                    "absolute_risk_reduction": 0.0,
+                    "relative_risk_reduction": 0.0,
+                    "p_value": 1.0,
+                    "effect_size": 0.0,
+                    "significant": False,
+                },
+                "by_category": {},
+                "regressions": [],
+            }
+
+        base_failed = int((~base_df["passed"]).sum())
         base_total = len(base_df)
-        mit_failed = (~mitigated_df["passed"]).sum()
+        mit_failed = int((~mitigated_df["passed"]).sum())
         mit_total = len(mitigated_df)
-        
-        # McNemar's test for paired proportions (if same prompts)
-        # For now, use chi-squared test of independence
-        from scipy.stats import chi2_contingency
-        
-        contingency = np.array([
-            [base_failed, base_total - base_failed],
-            [mit_failed, mit_total - mit_failed],
-        ])
-        
-        chi2, p_value, dof, expected = chi2_contingency(contingency)
-        
-        # Effect size (Cohen's h)
-        from statsmodels.stats.proportion import proportion_effectsize
-        effect_size = proportion_effectsize(
-            base_failed / base_total,
-            mit_failed / mit_total,
-        )
-        
-        # Category-level comparison
+
+        base_rate = base_failed / base_total
+        mit_rate = mit_failed / mit_total
+        p_value = self._compute_significance(base_df, mitigated_df)
+        effect_size = float(proportion_effectsize(base_rate, mit_rate))
+
         categories = set(base_df["category"]) | set(mitigated_df["category"])
-        category_comparison = {}
-        
-        for cat in categories:
+        category_comparison: dict[str, dict[str, float]] = {}
+
+        for cat in sorted(categories):
             base_cat = base_df[base_df["category"] == cat]
             mit_cat = mitigated_df[mitigated_df["category"] == cat]
-            
+
             if len(base_cat) > 0 and len(mit_cat) > 0:
-                base_rate = (~base_cat["passed"]).mean()
-                mit_rate = (~mit_cat["passed"]).mean()
-                
-                category_comparison[cat] = {
-                    "baseline_failure_rate": float(base_rate),
-                    "mitigated_failure_rate": float(mit_rate),
-                    "absolute_reduction": float(base_rate - mit_rate),
-                    "relative_reduction": float((base_rate - mit_rate) / base_rate) if base_rate > 0 else 0,
+                cat_base_rate = float((~base_cat["passed"]).mean())
+                cat_mit_rate = float((~mit_cat["passed"]).mean())
+                category_comparison[str(cat)] = {
+                    "baseline_failure_rate": cat_base_rate,
+                    "mitigated_failure_rate": cat_mit_rate,
+                    "absolute_reduction": cat_base_rate - cat_mit_rate,
+                    "relative_reduction": (
+                        (cat_base_rate - cat_mit_rate) / cat_base_rate if cat_base_rate > 0 else 0.0
+                    ),
                 }
-        
+
+        abs_reduction = base_rate - mit_rate
+        rel_reduction = abs_reduction / base_rate if base_rate > 0 else 0.0
+
         return {
             "overall": {
-                "baseline_failure_rate": float(base_failed / base_total) if base_total > 0 else 0,
-                "mitigated_failure_rate": float(mit_failed / mit_total) if mit_total > 0 else 0,
-                "absolute_risk_reduction": float(base_failed / base_total - mit_failed / mit_total) if base_total > 0 and mit_total > 0 else 0,
-                "relative_risk_reduction": float((base_failed / base_total - mit_failed / mit_total) / (base_failed / base_total)) if base_failed > 0 else 0,
+                "baseline_failure_rate": float(base_rate),
+                "mitigated_failure_rate": float(mit_rate),
+                "absolute_risk_reduction": float(abs_reduction),
+                "relative_risk_reduction": float(rel_reduction),
                 "p_value": float(p_value),
-                "effect_size": float(effect_size),
-                "significant": p_value < 0.01,
+                "effect_size": effect_size,
+                "significant": bool(p_value < 0.01),
             },
             "by_category": category_comparison,
             "regressions": self._find_regressions(base_df, mitigated_df),
         }
-    
+
     def _find_regressions(
         self,
         base_df: pd.DataFrame,
         mit_df: pd.DataFrame,
     ) -> list[dict[str, Any]]:
         """Find attacks that were blocked in baseline but succeed in mitigated."""
-        regressions = []
-        
-        # Match by probe and target
+        regressions: list[dict[str, Any]] = []
+
         for _, base_row in base_df[base_df["passed"]].iterrows():
             mit_matches = mit_df[
-                (mit_df["probe_name"] == base_row["probe_name"]) &
-                (mit_df["target_name"] == base_row["target_name"]) &
-                (~mit_df["passed"])
+                (mit_df["probe_name"] == base_row["probe_name"])
+                & (mit_df["target_name"] == base_row["target_name"])
+                & (mit_df["prompt"] == base_row["prompt"])
+                & (~mit_df["passed"])
             ]
-            
+
             if len(mit_matches) > 0:
-                regressions.append({
-                    "probe": base_row["probe_name"],
-                    "target": base_row["target_name"],
-                    "category": base_row["category"],
-                    "severity": base_row["severity"],
-                    "baseline_prompt": base_row["prompt"],
-                    "mitigated_response": mit_matches.iloc[0]["response"],
-                })
-        
+                regressions.append(
+                    {
+                        "probe": base_row["probe_name"],
+                        "target": base_row["target_name"],
+                        "category": base_row["category"],
+                        "severity": base_row["severity"],
+                        "baseline_prompt": base_row["prompt"],
+                        "mitigated_response": mit_matches.iloc[0]["response"],
+                    }
+                )
+
         return regressions
+
+
+from test_harness.probes import CustomRAGProbe, create_baseline_probes  # noqa: E402
+
+__all__ = [
+    "AttackCategory",
+    "AttackResult",
+    "AttackSeverity",
+    "ComparativeHarness",
+    "CustomRAGProbe",
+    "GarakProbeAdapter",
+    "Probe",
+    "PromptFooSuite",
+    "PromptFooTestCase",
+    "TestHarness",
+    "create_baseline_probes",
+]
