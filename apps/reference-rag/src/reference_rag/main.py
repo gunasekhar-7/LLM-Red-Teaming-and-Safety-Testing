@@ -59,10 +59,6 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 async def create_rag_service() -> HardenedRAGService:
     """Create hardened RAG service with configured LLM, embeddings, and safety guards."""
-    from langchain_anthropic import ChatAnthropic
-    from langchain_community.chat_models import ChatOllama
-    from langchain_community.embeddings import OllamaEmbeddings
-    from langchain_openai import ChatOpenAI, OpenAIEmbeddings
     from pydantic import SecretStr
 
     llm_secret = SecretStr(settings.llm_api_key) if settings.llm_api_key else None
@@ -70,6 +66,8 @@ async def create_rag_service() -> HardenedRAGService:
 
     llm: Any
     if settings.llm_provider == "openai":
+        from langchain_openai import ChatOpenAI
+
         openai_kwargs: dict[str, Any] = {
             "model": settings.llm_model,
             "temperature": settings.llm_temperature,
@@ -79,6 +77,8 @@ async def create_rag_service() -> HardenedRAGService:
         }
         llm = ChatOpenAI(**openai_kwargs)
     elif settings.llm_provider == "anthropic":
+        from langchain_anthropic import ChatAnthropic
+
         anthropic_kwargs: dict[str, Any] = {
             "model": settings.llm_model,
             "temperature": settings.llm_temperature,
@@ -88,6 +88,8 @@ async def create_rag_service() -> HardenedRAGService:
         }
         llm = ChatAnthropic(**anthropic_kwargs)
     elif settings.llm_provider == "ollama":
+        from langchain_ollama import ChatOllama
+
         llm = ChatOllama(
             model=settings.llm_model,
             temperature=settings.llm_temperature,
@@ -98,12 +100,16 @@ async def create_rag_service() -> HardenedRAGService:
 
     embeddings: Any
     if settings.embedding_provider == "openai":
+        from langchain_openai import OpenAIEmbeddings
+
         embeddings = OpenAIEmbeddings(
             model=settings.embedding_model,
             api_key=embed_secret,
             base_url=settings.embedding_base_url,
         )
     elif settings.embedding_provider == "ollama":
+        from langchain_ollama import OllamaEmbeddings
+
         embeddings = OllamaEmbeddings(
             model=settings.embedding_model,
             base_url=settings.embedding_base_url or "http://localhost:11434",
@@ -164,8 +170,13 @@ async def global_exception_handler(_request: Request, _exc: Exception) -> JSONRe
 
 
 if __name__ == "__main__":
+    import os
+
     import uvicorn
 
     uvicorn.run(
-        "reference_rag.main:app", host=settings.host, port=settings.port, reload=settings.debug
+        "reference_rag.main:app",
+        host=settings.host,
+        port=settings.port,
+        reload=os.getenv("UVICORN_RELOAD", "false").lower() == "true",
     )

@@ -120,3 +120,20 @@ class TestReferenceRAGAPI:
         monkeypatch.setattr(settings, "jwt_secret", "change-me-in-production")
         with pytest.raises(RuntimeError):
             settings.validate_security_settings()
+
+    async def test_create_rag_service_ollama_initializes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from reference_rag.main import create_rag_service
+
+        monkeypatch.setattr(settings, "llm_provider", "ollama")
+        monkeypatch.setattr(settings, "llm_model", "llama3.1:8b")
+        monkeypatch.setattr(settings, "llm_base_url", "http://localhost:11434")
+        monkeypatch.setattr(settings, "embedding_provider", "ollama")
+        monkeypatch.setattr(settings, "embedding_model", "nomic-embed-text")
+        monkeypatch.setattr(settings, "embedding_base_url", "http://localhost:11434")
+
+        service = await create_rag_service()
+        assert service is not None
+        assert service.llm is not None
+        assert service.embeddings is not None
