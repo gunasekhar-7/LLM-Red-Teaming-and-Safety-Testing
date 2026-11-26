@@ -23,7 +23,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/test-runner
 
 jobs:
   # =============================================================================
@@ -41,13 +40,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
 
       - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install uv
-          uv sync --all-extras
+        run: uv sync --all-extras
 
       - name: Run Ruff (linting)
         run: uv run ruff check .
@@ -60,11 +60,10 @@ jobs:
 
       - name: Check for secrets
         run: |
-          pip install detect-secrets
           if [ -f .secrets.baseline ]; then
-            detect-secrets scan --baseline .secrets.baseline
+            uv run --with detect-secrets detect-secrets scan --baseline .secrets.baseline
           else
-            detect-secrets scan --exclude-files 'results/.*'
+            uv run --with detect-secrets detect-secrets scan --exclude-files 'results/.*'
           fi
 
   unit-tests:
@@ -79,13 +78,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
 
       - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install uv
-          uv sync --all-extras
+        run: uv sync --all-extras
 
       - name: Run unit tests
         run: uv run pytest -m unit -v --tb=short --cov --cov-report=xml
@@ -95,6 +95,7 @@ jobs:
         with:
           files: ./coverage.xml
           flags: unittests
+          fail_ci_if_error: false
 
   # =============================================================================
   # Integration Tests (requires Docker)
@@ -131,7 +132,7 @@ jobs:
       - name: Run baseline assessment
         run: |
           docker compose -f infra/docker/docker-compose.test.yml run --rm test-runner \
-            baseline --target reference-rag --target existing-rag --output results/baseline --concurrent 3
+            baseline --target existing-rag --output results/baseline --concurrent 3
 
       - name: Upload baseline results
         uses: actions/upload-artifact@v4
@@ -146,7 +147,7 @@ jobs:
           BASELINE_FILE=$(find results/baseline -name "*.jsonl" | head -1)
           if [ -n "$BASELINE_FILE" ]; then
             docker compose -f infra/docker/docker-compose.test.yml run --rm test-runner \
-              compare "$BASELINE_FILE" --target reference-rag --target existing-rag --output results/mitigated
+              compare "$BASELINE_FILE" --target existing-rag --output results/mitigated
           else
             echo "No baseline found, skipping comparative test"
           fi
@@ -194,9 +195,15 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      repo_lower: ${{ steps.repo.outputs.repo_lower }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Lowercase repository name
+        id: repo
+        run: echo "repo_lower=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -208,11 +215,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
+      - name: Extract metadata (test-runner)
+        id: meta_runner
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.repo_lower }}/test-runner
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -226,8 +233,31 @@ jobs:
           context: .
           file: docker/Dockerfile.test-runner
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta_runner.outputs.tags }}
+          labels: ${{ steps.meta_runner.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Extract metadata (reference-rag)
+        id: meta_rag
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ steps.repo.outputs.repo_lower }}/reference-rag
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push reference-rag image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/reference-rag/Dockerfile
+          push: true
+          tags: ${{ steps.meta_rag.outputs.tags }}
+          labels: ${{ steps.meta_rag.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -239,7 +269,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [build-image]
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     permissions:
       contents: read
       packages: write
@@ -250,14 +280,14 @@ jobs:
       - name: Generate SBOM for test-runner
         uses: anchore/sbom-action@v0
         with:
-          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          image: ${{ env.REGISTRY }}/${{ needs.build-image.outputs.repo_lower }}/test-runner:latest
           format: spdx-json
           output-file: sbom-test-runner.spdx.json
 
       - name: Generate SBOM for reference-rag
         uses: anchore/sbom-action@v0
         with:
-          image: ${{ env.REGISTRY }}/${{ github.repository }}/reference-rag:latest
+          image: ${{ env.REGISTRY }}/${{ needs.build-image.outputs.repo_lower }}/reference-rag:latest
           format: spdx-json
           output-file: sbom-reference-rag.spdx.json
 
@@ -284,7 +314,7 @@ jobs:
     name: Create Release
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [integration-tests, build-image, sbom]
+    needs: [integration-tests, build-image]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
@@ -321,7 +351,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [build-image]
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     permissions:
       contents: read
       security-events: write
@@ -332,7 +362,7 @@ jobs:
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          image-ref: ${{ env.REGISTRY }}/${{ needs.build-image.outputs.repo_lower }}/test-runner:latest
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH

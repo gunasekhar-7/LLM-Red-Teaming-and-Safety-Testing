@@ -103,7 +103,8 @@ class TestTestHarnessExecution:
 
         results = await harness.run_all(max_concurrent=2, progress=False)
         assert target.peak_active <= 2
-        assert len(results) == sum(len(p._prompts) for p in probes)  # type: ignore[attr-defined]
+        expected_count = sum([len(await p.generate_prompts()) for p in probes])
+        assert len(results) == expected_count
         assert all(r.passed is True and r.failed is False for r in results)
 
         summary = harness.generate_summary()
