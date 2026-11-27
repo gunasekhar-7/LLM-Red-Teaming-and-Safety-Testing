@@ -18,7 +18,8 @@ RUN uv pip install --system --no-cache \
         "torch>=2.2.0" && \
     uv pip install --system --no-cache \
         ./libs/guards \
-        ./apps/reference-rag
+        ./apps/reference-rag && \
+    python -m spacy download en_core_web_sm
 
 FROM python:3.11-slim
 

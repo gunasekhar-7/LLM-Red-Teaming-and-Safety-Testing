@@ -552,20 +552,43 @@ class _BasePIIRedactionGuard(BaseGuard):
         super().__init__(name, config, settings)
         self._analyzer: Any = None
         self._anonymizer: Any = None
+        self._init_lock = asyncio.Lock()
 
     async def _get_engines(self) -> tuple[Any, Any]:
         if self._analyzer is None:
+            async with self._init_lock:
+                if self._analyzer is None:
 
-            def _init_presidio() -> tuple[Any, Any]:
-                try:
-                    from presidio_analyzer import AnalyzerEngine
-                    from presidio_anonymizer import AnonymizerEngine
+                    def _init_presidio() -> tuple[Any, Any]:
+                        import importlib.util
 
-                    return AnalyzerEngine(), AnonymizerEngine()
-                except Exception:
-                    return "disabled", None
+                        try:
+                            model_name = next(
+                                (
+                                    m
+                                    for m in ("en_core_web_lg", "en_core_web_sm")
+                                    if importlib.util.find_spec(m) is not None
+                                ),
+                                None,
+                            )
+                            if model_name is None:
+                                return "disabled", None
 
-            self._analyzer, self._anonymizer = await asyncio.to_thread(_init_presidio)
+                            from presidio_analyzer import AnalyzerEngine
+                            from presidio_analyzer.nlp_engine import NlpEngineProvider
+                            from presidio_anonymizer import AnonymizerEngine
+
+                            nlp_engine = NlpEngineProvider(
+                                nlp_configuration={
+                                    "nlp_engine_name": "spacy",
+                                    "models": [{"lang_code": "en", "model_name": model_name}],
+                                }
+                            ).create_engine()
+                            return AnalyzerEngine(nlp_engine=nlp_engine), AnonymizerEngine()
+                        except (Exception, SystemExit):
+                            return "disabled", None
+
+                    self._analyzer, self._anonymizer = await asyncio.to_thread(_init_presidio)
         return self._analyzer, self._anonymizer
 
     async def _redact_text(self, text: str) -> tuple[str, list[str]]:

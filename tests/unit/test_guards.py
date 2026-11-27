@@ -150,6 +150,19 @@ class TestRetrievalGuards:
         res = await guard.check("Contact alice@example.com")
         assert res.action == GuardAction.ALLOW
 
+    async def test_pii_redaction_skips_runtime_spacy_download_when_model_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import importlib.util
+
+        monkeypatch.setattr(importlib.util, "find_spec", lambda _name: None)
+        guard = PIIRedactionGuard(GuardConfig(), GuardSettings())
+        analyzer, anonymizer = await guard._get_engines()
+        assert analyzer == "disabled"
+        assert anonymizer is None
+        res = await guard.check("Contact alice@example.com")
+        assert res.action == GuardAction.ALLOW
+
 
 @pytest.mark.unit
 class TestOutputGuardsAndMiddleware:

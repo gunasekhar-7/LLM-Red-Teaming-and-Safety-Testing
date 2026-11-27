@@ -23,8 +23,9 @@ COPY apps ./apps
 COPY src ./src
 
 # Install CPU-only PyTorch first to avoid multi-GB CUDA wheels in CI,
-# then install all workspace packages non-editably into /opt/venv.
-RUN uv venv /opt/venv && \
+# install all workspace packages non-editably into /opt/venv, and
+# pre-install the lightweight spaCy model so Presidio never downloads at runtime.
+RUN uv venv --seed /opt/venv && \
     uv pip install --python /opt/venv/bin/python --no-cache \
         --index-url https://download.pytorch.org/whl/cpu \
         "torch>=2.2.0" && \
@@ -35,7 +36,8 @@ RUN uv venv /opt/venv && \
         ./libs/test-harness \
         ./apps/reference-rag \
         ./apps/existing-rag-adapter \
-        .
+        . && \
+    /opt/venv/bin/python -m spacy download en_core_web_sm
 
 # =============================================================================
 # Stage 2: Runtime - Minimal image with only runtime dependencies
