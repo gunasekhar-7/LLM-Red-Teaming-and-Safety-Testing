@@ -174,9 +174,10 @@ if __name__ == "__main__":
 
     import uvicorn
 
+    reload = os.getenv("UVICORN_RELOAD", "false").lower() == "true"
     uvicorn.run(
-        "reference_rag.main:app",
+        "reference_rag.main:app" if reload else app,
         host=settings.host,
         port=settings.port,
-        reload=os.getenv("UVICORN_RELOAD", "false").lower() == "true",
+        reload=reload,
     )

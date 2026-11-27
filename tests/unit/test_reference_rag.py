@@ -137,3 +137,21 @@ class TestReferenceRAGAPI:
         assert service is not None
         assert service.llm is not None
         assert service.embeddings is not None
+
+    def test_main_module_entrypoint_does_not_duplicate_metrics(self) -> None:
+        import os
+        import subprocess
+        import sys
+
+        script = (
+            "import runpy, uvicorn; "
+            "calls = []; "
+            "uvicorn.run = lambda target, **kw: calls.append((target, kw)); "
+            "runpy.run_module('reference_rag.main', run_name='__main__'); "
+            "assert len(calls) == 1 and not isinstance(calls[0][0], str), calls"
+        )
+        env = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)}
+        proc = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, env=env, check=False
+        )
+        assert proc.returncode == 0, proc.stderr + proc.stdout
